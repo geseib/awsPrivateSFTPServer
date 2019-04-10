@@ -1,0 +1,95 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "VPC Endpoint for Transfer(SFTP Server)"
+
+Metadata:
+  "AWS::CloudFormation::Interface":
+    ParameterGroups:
+      - Label:
+          default: "VPC Parameters"
+        Parameters:
+          - SFTPVPC
+          - AttachSubnetA
+          - AttachSubnetB
+
+Parameters:
+  # Need CIDR for where host will SFTP from. For more options edit the SecurityGroup Resource
+  AllowedCIDR:
+    Type: String
+    AllowedPattern: '((\d{1,3})\.){3}\d{1,3}/\d{1,2}'
+    Description: "CIDR Block allowed to SFTP for inbound Security Group (form of 0.0.0.0/0)"
+    Default: "10.0.0.0/8"
+  # Which VPC the Endpoint and SFTP Server will be in
+  SFTPVPC:
+    Description: VPC to place the Transfer Endpoint
+    Type: AWS::EC2::VPC::Id
+  # Pick Two Private Subnets if Access is limited to Corp Internal
+  AttachSubnetA:
+    Description: Subnet in Availability Zone 1
+    Type: AWS::EC2::Subnet::Id
+  AttachSubnetB:
+    Description: Subnet in Availability Zone 2
+    Type: AWS::EC2::Subnet::Id
+
+Resources:
+  #Create Role for Logging from Transfer
+  RoleTransferLogging:
+    Type: "AWS::IAM::Role"
+    Properties:
+      Policies:
+        - PolicyName: TransferLogging
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "logs:CreateLogStream"
+                  - "logs:DescribeLogStreams"
+                  - "logs:CreateLogGroup"
+                  - "logs:PutLogEvents"
+                Resource: "*"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: "transfer.amazonaws.com"
+            Action: "sts:AssumeRole"
+
+  # Create Transfer VPC Endpoint Security Group for TCP port 22
+  EndpointSecGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Open-up ports for local VPC
+      GroupName:
+        !Join ["-", [Transfer, Ref: "AWS::StackName", "internal-sec-group"]]
+      VpcId:
+        Ref: SFTPVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: "22"
+          ToPort: "22"
+          CidrIp: !Ref "AllowedCIDR"
+
+  # Create Transfer VPC Endpoint, this takes ~3 minutes to provision
+  TransferServerEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId:
+        Ref: SFTPVPC
+      ServiceName:
+        !Join ["", ["com.amazonaws.", Ref: "AWS::Region", ".transfer.server"]]
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: True
+      SubnetIds:
+        - Ref: AttachSubnetA
+        - Ref: AttachSubnetB
+      SecurityGroupIds:
+        - Ref: EndpointSecGroup
+
+Outputs:
+  TransferEPDNSRecord:
+    Value:
+      !Select [
+        1,
+        !Split [":", !Select [0, !GetAtt TransferServerEndpoint.DnsEntries]],
+      ]
